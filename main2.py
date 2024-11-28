@@ -43,7 +43,7 @@ def extract_pdf_data(pdf_dir):
         try:
             with open(pdf_path, "rb") as file:
                 reader = PyPDF2.PdfReader(file)
-                for page in reader.pages:
+                for page in reader.pages[17:18]:
                     # pr::xallnt(page.extract_text())
                     text = page.extract_text()
                     lines = text.splitlines()
