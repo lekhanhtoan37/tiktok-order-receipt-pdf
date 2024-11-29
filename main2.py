@@ -6,6 +6,8 @@ from googleapiclient.discovery import build
 from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
 from dotenv import load_dotenv
+from numpy import extract
+import pdfplumber
 
 load_dotenv()
 
@@ -40,81 +42,20 @@ def extract_pdf_data(pdf_dir):
     for pdf_filename in pdf_files:
         pdf_path = os.path.join(pdf_dir, pdf_filename)
 
-        try:
-            with open(pdf_path, "rb") as file:
-                reader = PyPDF2.PdfReader(file)
-                for page in reader.pages[17:18]:
-                    # pr::xallnt(page.extract_text())
-                    text = page.extract_text()
-                    lines = text.splitlines()
+        data = extract_table_without_borders(pdf_path)
+        if data:
+            print(f"Extracted data from {pdf_filename}")
+            merged_data = merge_products(data)
+            if merged_data:
+                for d in merged_data:
+                    print(f"Merged data from {pdf_filename}, order_id: {d['order_id']}")
+                    d["filename"] = pdf_filename
+                    d["page"] = d["Page"]
+                    all_pdf_data.append(d)
+            else:
+                print(f"No data to insert to sheet from {pdf_filename}")
 
-                    order_id, product_name, sku, seller_sku, qty, qty_total = (
-                        None,
-                        None,
-                        None,
-                        None,
-                        None,
-                        None,
-                    )
-
-                    print("---------------------")
-
-                    for idx, line in enumerate(lines):
-                        print(idx, line)
-                        # Look for specific fields based on patterns
-                        if "Order ID:" in line:
-                            order_id = line.split("Order ID:")[1].strip()
-
-                            # Match "Product Name" and extract its value from the next line
-                        if line.strip() == "Product Name":
-                            if idx + 4 < len(lines):  # Check if the next line exists
-                                product_name = lines[idx + 4].strip()
-
-                        # Match "SKU" and extract its value from the next line
-                        if line.strip() == "SKU":
-                            if idx + 4 < len(lines):  # Check if the next line exists
-                                sku = lines[idx + 4].strip()
-
-                        # Match "Seller SKU" and extract its value from the next line
-                        if line.strip() == "Seller SKU":
-                            if idx + 4 < len(lines):  # Check if the next line exists
-                                seller_sku = lines[idx + 4].strip()
-
-                        # Match "Qty" and extract its value from the next line
-                        if line.strip() == "Qty":
-                            if idx + 4 < len(lines):  # Check if the next line exists
-                                qty = lines[idx + 4].strip()
-
-                        # Match "Qty Total" and extract its value from the next line
-                        if line.strip() == "Qty Total:":
-                            if idx + 2 < len(lines):  # Check if the next line exists
-                                qty_total = lines[idx + 2].strip()
-
-                    if order_id:
-                        print(order_id, product_name, sku, seller_sku, qty, qty_total)
-                        all_pdf_data.append(
-                            {
-                                "Order ID": order_id,
-                                "Product Name": product_name,
-                                "SKU": sku,
-                                "Seller SKU": seller_sku,
-                                "Qty": qty,
-                                "Qty Total": qty_total,
-                                "filename": pdf_filename,
-                            }
-                        )
-                        order_id, product_name, sku, seller_sku, qty, qty_total = (
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                            None,
-                        )
-
-        except Exception as e:
-            print(f"Error processing {pdf_filename}: {e}")
-
+    # print("all_pdf_data", all_pdf_data)
     return all_pdf_data
 
 
@@ -205,6 +146,130 @@ def insert_to_google_sheet(service, spreadsheet_id, range_name, values, append=F
     print(f"{result.get('updatedCells')} cells updated.")
 
 
+# Hàm trích xuất thông tin bảng không viền dựa trên từ khóa
+def extract_table_without_borders(pdf_path):
+    extracted_data = []
+    with pdfplumber.open(pdf_path) as pdf:
+        for idx, page in enumerate(pdf.pages):
+            text = page.extract_text(keep_blank_chars=True)
+            # Phân tách từng dòng
+            lines = text.split("\n")
+
+            # Tìm các dòng chứa thông tin liên quan đến sản phẩm
+            header_found = False
+            index = 0
+            order_id = ""
+            order_qty = ""
+            first_line = ""
+            for line in lines:
+                if not header_found and "Product Name" in line:
+                    # Phát hiện dòng tiêu đề
+                    header_found = True
+                    continue
+
+                if header_found:
+                    if "Order ID:" in line:
+                        order_id = line.split(":")[1].strip()
+                        for d in extracted_data:
+                            if d["Page"] == idx + 1:
+                                d["order_id"] = order_id
+                        continue
+                    if "Qty Total:" in line:
+                        order_qty = line.split(":")[1].strip()
+                        for d in extracted_data:
+                            if d["Page"] == idx + 1:
+                                d["order_qty"] = order_qty
+
+                        continue
+                    # Dòng dữ liệu sản phẩm (phân tích dựa trên dấu phân cách hoặc định dạng)
+                    columns = line.split(" ")  # Chia dữ liệu dựa trên khoảng trắng
+                    columns_len = len(columns)
+                    if columns_len >= 3 and columns_len > len(first_line.split(" ")):
+                        first_line = line
+                    # Xử lý và ánh xạ cột
+                    if columns_len >= len(first_line.split(" ")):
+                        sku = ""
+                        qty = ""
+                        if columns[-1].isdigit():
+                            sku = columns[-2]  # SKU (cột áp chót)
+                            qty = columns[-1]  # Qty (cột cuối)
+                            index += 1
+                        else:
+                            sku = "NA"
+                            qty = "NA"
+
+                        product_name = " ".join(
+                            columns[:-2]
+                        )  # Tên sản phẩm (trước 2 cột cuối)
+
+                        if not columns[-1].isdigit():
+                            product_name = " ".join(
+                                columns
+                            )  # Tên sản phẩm (trước 2 cột cuối)
+
+                        # Lưu thông tin vào danh sách
+                        extracted_data.append(
+                            {
+                                "Product Name": product_name,
+                                "SKU": sku,
+                                "Qty": qty,
+                                "Page": idx + 1,
+                            }
+                        )
+
+                    else:
+                        extracted_data.append(
+                            {
+                                "Product Name": " ".join(columns),
+                                "SKU": "NA",
+                                "Qty": "NA",
+                                "Page": idx + 1,
+                            }
+                        )
+
+    return extracted_data  # Gọi hàm để trích xuất bảng
+
+
+def merge_products(data: list):
+    merged_data = []
+    temp_product_name = []
+
+    current_idx = 0
+    if isinstance(data, str):
+        return merged_data
+
+    for item in data:
+        # Kiểm tra nếu 'Qty' có thể chuyển đổi thành số nguyên
+        if isinstance(item, str):
+            continue
+
+        try:
+            if item["Qty"].isdigit():
+                # Gộp các Product Name và thêm vào danh sách kết quả
+
+                current_idx += 1
+                temp_product_name = []  # Reset danh sách tạm thời
+
+                # Thêm sản phẩm với Qty là số nguyên vào danh sách
+                merged_data.append(item)
+            else:
+                # Nếu không phải số nguyên, gộp Product Name
+                temp_product_name.append(item["Product Name"])
+
+            # Xử lý trường hợp còn dữ liệu chưa gộp
+            if len(temp_product_name) > 0:
+                merged_data[current_idx - 1]["Product Name"] = (
+                    merged_data[current_idx - 1]["Product Name"]
+                    + " "
+                    + " ".join(temp_product_name)
+                )
+        except Exception as e:
+            print("merge_products error", e)
+            continue
+
+    return merged_data
+
+
 def main():
     """
     Main function to process PDF and insert data to Google Sheet
@@ -213,6 +278,7 @@ def main():
     try:
         pdf_dir = "./pdf/"
         order_data_list = extract_pdf_data(pdf_dir)
+        # print(order_data_list)
 
         SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
         RANGE_NAME = os.getenv("RANGE_NAME")
@@ -223,25 +289,26 @@ def main():
         existing_data = get_google_sheet_data(service, SPREADSHEET_ID, RANGE_NAME)
 
         if os.getenv("OVERWRITE_DATA") == "True":
-            print("Overwriting data.")
             print("Google Sheet is empty. Overwriting data.")
 
             header = [
                 "Order ID",
                 "Product Name",
                 "SKU",
-                "Seller SKU",
                 "Qty",
                 "Qty Total",
+                "Page",
+                "Filename",
             ]
             values = [header] + [
                 [
-                    order["Order ID"],
+                    order["order_id"],
                     order["Product Name"],
                     order["SKU"],
-                    order["Seller SKU"],
                     order["Qty"],
-                    order["Qty Total"],
+                    order["order_qty"],
+                    order["page"],
+                    order["filename"],
                 ]
                 for order in order_data_list
             ]
@@ -253,13 +320,24 @@ def main():
             if not existing_data:
                 print("Google Sheet is empty. Overwriting data.")
 
-                header = ["Order Number", "Quantity Total", "Total Amount", "Date"]
+                header = [
+                    "Order ID",
+                    "Product Name",
+                    "SKU",
+                    "Qty",
+                    "Qty Total",
+                    "Page",
+                    "Filename",
+                ]
                 values = [header] + [
                     [
-                        order["order_number"],
-                        order["quantity_total"],
-                        order["total_amount"],
-                        order["date"],
+                        order["order_id"],
+                        order["Product Name"],
+                        order["SKU"],
+                        order["Qty"],
+                        order["order_qty"],
+                        order["page"],
+                        order["filename"],
                     ]
                     for order in order_data_list
                 ]
@@ -268,8 +346,26 @@ def main():
                 )
             else:
                 print("Appending data to Google Sheet.")
-                values = [
-                    [order["order_number"], order["total_amount"], order["date"]]
+
+                header = [
+                    "Order ID",
+                    "Product Name",
+                    "SKU",
+                    "Qty",
+                    "Qty Total",
+                    "Page",
+                    "Filename",
+                ]
+                values = [header] + [
+                    [
+                        order["order_id"],
+                        order["Product Name"],
+                        order["SKU"],
+                        order["Qty"],
+                        order["order_qty"],
+                        order["page"],
+                        order["filename"],
+                    ]
                     for order in order_data_list
                 ]
                 insert_to_google_sheet(

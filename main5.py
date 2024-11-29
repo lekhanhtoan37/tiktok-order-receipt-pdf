@@ -1,8 +1,9 @@
 import pdfplumber
 import time
+import pandas as pd
 
 # Load the PDF file
-pdf_path = "./pdf/sample2.pdf"
+pdf_path = "./pdf/sample.pdf"
 
 # Initialize a list to store product details
 product_details = []
@@ -13,7 +14,7 @@ def extract_table_without_borders(pdf_path):
     extracted_data = []
     metadata = {}
     with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
+        for idx, page in enumerate(pdf.pages[164:165]):
             # Trích xuất toàn bộ văn bản trên trang
             """ table = page.extract_table(
                 {
@@ -24,7 +25,7 @@ def extract_table_without_borders(pdf_path):
                 }
             ) """
 
-            table = page.extract_tables(
+            """ table = page.extract_tables(
                 table_settings={
                     "vertical_strategy": "explicit",
                     "horizontal_strategy": "lines",
@@ -34,14 +35,15 @@ def extract_table_without_borders(pdf_path):
 
             tables = page.debug_tablefinder(
                 {"vertical_strategy": "text", "horizontal_strategy": "lines"}
-            )
-
+            ) """
+            """
             for t in tables.tables:
                 print("box", t.bbox)
                 for cell in t.cells:  # iterating through the required cells
                     print(cell)
                     c = page.crop(cell).extract_words()  # extract the words
                     print(c)
+            """
 
             text = page.extract_text(keep_blank_chars=True)
             # print(text)
@@ -54,6 +56,11 @@ def extract_table_without_borders(pdf_path):
             index = 0
             order_id = ""
             order_qty = ""
+
+            if isinstance(lines, str):
+                print("lines is string", lines)
+                continue
+
             for line in lines:
                 if not header_found and "Product Name" in line:
                     # Phát hiện dòng tiêu đề
@@ -62,21 +69,28 @@ def extract_table_without_borders(pdf_path):
 
                 if header_found:
                     if "Order ID:" in line:
-                        order_id = line.split(":")[1].strip()
+                        split_arr = line.split(":")
+                        if len(split_arr) <= 1:
+                            continue
+                        order_id = split_arr[1].strip()
                         metadata["order_id"] = order_id
                         continue
                     if "Qty Total:" in line:
-                        order_qty = line.split(":")[1].strip()
+                        split_arr = line.split(":")
+                        if len(split_arr) <= 1:
+                            continue
+                        order_qty = split_arr[1].strip()
                         metadata["order_qty"] = order_qty
                         continue
                     # Dòng dữ liệu sản phẩm (phân tích dựa trên dấu phân cách hoặc định dạng)
                     columns = line.split(" ")  # Chia dữ liệu dựa trên khoảng trắng
-                    print(columns)
+                    print("columns", columns)
+                    # print(columns)
                     # Xử lý và ánh xạ cột
                     if len(columns) >= 3:
                         sku = ""
                         qty = ""
-                        print(columns[-1])
+                        # print(columns[-1])
                         if columns[-1].isdigit():
                             sku = columns[-2]  # SKU (cột áp chót)
                             qty = columns[-1]  # Qty (cột cuối)
@@ -113,43 +127,56 @@ def extract_table_without_borders(pdf_path):
 raw_data = extract_table_without_borders(pdf_path)
 
 
-def merge_products(data):
+def merge_products(data: list):
     merged_data = []
     temp_product_name = []
 
     current_idx = 0
+    if isinstance(data, str):
+        return merged_data
+
     for item in data:
         # Kiểm tra nếu 'Qty' có thể chuyển đổi thành số nguyên
-        if item["Qty"].isdigit():
-            # Gộp các Product Name và thêm vào danh sách kết quả
-            """ merged_data.append(
-                {
-                    "Product Name": item["Product Name"],
-                    "SKU": item["SKU"],
-                    "Qty": item["Qty"],
-                }
-            ) """
-            current_idx += 1
-            temp_product_name = []  # Reset danh sách tạm thời
+        if isinstance(item, str):
+            continue
 
-            # Thêm sản phẩm với Qty là số nguyên vào danh sách
-            merged_data.append(item)
-        else:
-            # Nếu không phải số nguyên, gộp Product Name
-            temp_product_name.append(item["Product Name"])
+        try:
+            if item["Qty"].isdigit():
+                # Gộp các Product Name và thêm vào danh sách kết quả
+                """ merged_data.append(
+                    {
+                        "Product Name": item["Product Name"],
+                        "SKU": item["SKU"],
+                        "Qty": item["Qty"],
+                    }
+                ) """
+                current_idx += 1
+                temp_product_name = []  # Reset danh sách tạm thời
 
-        # Xử lý trường hợp còn dữ liệu chưa gộp
-        if len(temp_product_name) > 0:
-            merged_data[current_idx - 1]["Product Name"] = (
-                merged_data[current_idx - 1]["Product Name"]
-                + " "
-                + " ".join(temp_product_name)
-            )
+                # Thêm sản phẩm với Qty là số nguyên vào danh sách
+                merged_data.append(item)
+            else:
+                # Nếu không phải số nguyên, gộp Product Name
+                temp_product_name.append(item["Product Name"])
+
+            # Xử lý trường hợp còn dữ liệu chưa gộp
+            if len(temp_product_name) > 0:
+                merged_data[current_idx - 1]["Product Name"] = (
+                    merged_data[current_idx - 1]["Product Name"]
+                    + " "
+                    + " ".join(temp_product_name)
+                )
+        except Exception as e:
+            print("merge_products error", e)
+            continue
 
     return merged_data
 
 
-print("ouput:", merge_products(raw_data))
+products = merge_products(raw_data[0])
+print("products", products)
+df = pd.DataFrame(products)
+df.to_csv("products1.csv", index=False)
 """ for idx, raw_row in enumerate(raw_data):
     print(idx, raw_row)
     product_name = ""
@@ -163,7 +190,7 @@ print("ouput:", merge_products(raw_data))
         if product_name == "":
             product_name = raw_row["Product Name"]
 
-    if reset and raw_row["Product Name"] != "":
+    if reset and raw_row fa["Product Name"] != "":
         product_name = product_name + " " + raw_row["Product Name"]
 
     if idx + 1 < len(raw_data) and raw_data[idx + 1]["Qty"] == "1":
