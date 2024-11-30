@@ -8,6 +8,8 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from dotenv import load_dotenv
 from numpy import extract
 import pdfplumber
+import csv
+import sys
 
 load_dotenv()
 
@@ -75,75 +77,6 @@ def save_processed_files(processed_files, file_path="processed_files.txt"):
     """
     with open(file_path, "w") as file:
         file.write("\n".join(processed_files))
-
-
-def get_google_sheets_service():
-    """
-    Authenticate and create Google Sheets service
-    """
-    SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-    creds = None
-
-    if os.path.exists("token.json"):
-        creds = Credentials.from_authorized_user_file("token.json", SCOPES)
-
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file("credentials.json", SCOPES)
-            creds = flow.run_local_server(port=0)
-
-        with open("token.json", "w") as token:
-            token.write(creds.to_json())
-
-    return build("sheets", "v4", credentials=creds)
-
-
-def get_google_sheet_data(service, spreadsheet_id, range_name):
-    """
-    Retrieve data from a Google Sheet
-    """
-    result = (
-        service.spreadsheets()
-        .values()
-        .get(spreadsheetId=spreadsheet_id, range=range_name)
-        .execute()
-    )
-    return result.get("values", [])
-
-
-def insert_to_google_sheet(service, spreadsheet_id, range_name, values, append=False):
-    """
-    Insert data into a Google Sheet
-    """
-    body = {"values": values}
-    if append:
-        result = (
-            service.spreadsheets()
-            .values()
-            .append(
-                spreadsheetId=spreadsheet_id,
-                range=range_name,
-                valueInputOption="RAW",
-                insertDataOption="INSERT_ROWS",
-                body=body,
-            )
-            .execute()
-        )
-    else:
-        result = (
-            service.spreadsheets()
-            .values()
-            .update(
-                spreadsheetId=spreadsheet_id,
-                range=range_name,
-                valueInputOption="RAW",
-                body=body,
-            )
-            .execute()
-        )
-    print(f"{result.get('updatedCells')} cells updated.")
 
 
 # Hàm trích xuất thông tin bảng không viền dựa trên từ khóa
@@ -270,115 +203,52 @@ def merge_products(data: list):
     return merged_data
 
 
+def save_to_csv(data, filename="output.csv"):
+    """Save the extracted data to a CSV file."""
+    header = ["Order ID", "Product Name", "SKU", "Qty", "Qty Total", "Page", "Filename"]
+    with open(
+        filename, mode="w", newline="", encoding="utf-8"
+    ) as file:  # Đảm bảo mã hóa utf-8
+        writer = csv.writer(file)
+        writer.writerow(header)  # Ghi header
+        for row in data:
+            writer.writerow(
+                [
+                    row.get("order_id", ""),
+                    row.get("Product Name", ""),
+                    row.get("SKU", ""),
+                    row.get("Qty", ""),
+                    row.get("order_qty", ""),
+                    row.get("page", ""),
+                    row.get("filename", ""),
+                ]
+            )  # Ghi các dữ liệu
+
+
 def main():
     """
-    Main function to process PDF and insert data to Google Sheet
+    Main function to process PDF and insert data to CSV file
     """
     print("Processing PDFs...")
     try:
-        pdf_dir = "./pdf/"
+        pdf_dir = "./pdf"
+
         order_data_list = extract_pdf_data(pdf_dir)
-        # print(order_data_list)
 
-        SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
-        RANGE_NAME = os.getenv("RANGE_NAME")
-        if not SPREADSHEET_ID or not RANGE_NAME:
-            raise ValueError("SPREADSHEET_ID and RANGE_NAME must be set")
+        if order_data_list:
+            # Lưu dữ liệu vào file CSV
+            save_to_csv(order_data_list, "order_data.csv")
 
-        service = get_google_sheets_service()
-        existing_data = get_google_sheet_data(service, SPREADSHEET_ID, RANGE_NAME)
-
-        if os.getenv("OVERWRITE_DATA") == "True":
-            print("Google Sheet is empty. Overwriting data.")
-
-            header = [
-                "Order ID",
-                "Product Name",
-                "SKU",
-                "Qty",
-                "Qty Total",
-                "Page",
-                "Filename",
-            ]
-            values = [header] + [
-                [
-                    order["order_id"],
-                    order["Product Name"],
-                    order["SKU"],
-                    order["Qty"],
-                    order["order_qty"],
-                    order["page"],
-                    order["filename"],
-                ]
-                for order in order_data_list
-            ]
-            # print(values)
-            insert_to_google_sheet(
-                service, SPREADSHEET_ID, RANGE_NAME, values, append=False
-            )
-        else:
-            if not existing_data:
-                print("Google Sheet is empty. Overwriting data.")
-
-                header = [
-                    "Order ID",
-                    "Product Name",
-                    "SKU",
-                    "Qty",
-                    "Qty Total",
-                    "Page",
-                    "Filename",
-                ]
-                values = [header] + [
-                    [
-                        order["order_id"],
-                        order["Product Name"],
-                        order["SKU"],
-                        order["Qty"],
-                        order["order_qty"],
-                        order["page"],
-                        order["filename"],
-                    ]
-                    for order in order_data_list
-                ]
-                insert_to_google_sheet(
-                    service, SPREADSHEET_ID, RANGE_NAME, values, append=False
-                )
-            else:
-                print("Appending data to Google Sheet.")
-
-                header = [
-                    "Order ID",
-                    "Product Name",
-                    "SKU",
-                    "Qty",
-                    "Qty Total",
-                    "Page",
-                    "Filename",
-                ]
-                values = [header] + [
-                    [
-                        order["order_id"],
-                        order["Product Name"],
-                        order["SKU"],
-                        order["Qty"],
-                        order["order_qty"],
-                        order["page"],
-                        order["filename"],
-                    ]
-                    for order in order_data_list
-                ]
-                insert_to_google_sheet(
-                    service, SPREADSHEET_ID, RANGE_NAME, values, append=True
-                )
-
-        # Update processed files
+        # Cập nhật danh sách các file đã xử lý
         processed_files = load_processed_files()
         processed_files.extend([order["filename"] for order in order_data_list])
         save_processed_files(processed_files)
 
+        print("Process completed successfully.")
+        sys.exit(0)  # Thoát với mã thành công (exit code 0)
     except Exception as e:
         print(f"An error occurred: {e}")
+        sys.exit(1)  # Thoát với mã lỗi (exit code 1)
 
 
 if __name__ == "__main__":
